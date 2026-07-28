@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+torch
+pyodbc
+python-dotenv
+joblib
+ultralytics
+opencv-python-headless
+pillow
+pyyaml
