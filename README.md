@@ -219,7 +219,7 @@ Request dùng `multipart/form-data` với trường `file`.
 | `rotate_degrees` | `0` | `-180–180` | Góc xoay ảnh trước inference |
 | `include_annotated_image` | `false` | Boolean | Trả thêm PNG dạng Base64 trong JSON |
 
-Giao diện web đang đặt `digit_conf=0.60` và xử lý từng ảnh tuần tự. Giao diện có tùy chọn xoay `270°`, nhưng API hiện chỉ chấp nhận góc từ `-180°` đến `180°`; vì vậy tùy chọn `270°` sẽ bị API từ chối. Khi gọi API trực tiếp, dùng `-90°` thay cho `270°`.
+Giao diện web đang đặt `digit_conf=0.60` và xử lý từng ảnh tuần tự. Tùy chọn hiển thị `270°` được gửi tới API dưới dạng góc tương đương `-90°` để nằm trong giới hạn `-180°` đến `180°` của backend.
 
 Ví dụ PowerShell:
 
