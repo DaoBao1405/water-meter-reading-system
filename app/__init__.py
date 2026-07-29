@@ -1,0 +1,1 @@
+"""Meter-reading FastAPI service."""

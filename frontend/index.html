@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Water meter image recognition dashboard" />
+    <title>Đọc chỉ số nước</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <h1>Đọc chỉ số đồng hồ nước</h1>
+          <p class="subtitle">Tải ảnh lên, xem kết quả nhận diện và lưu lịch sử trong một nơi.</p>
+        </div>
+        <button id="refresh-button" class="button button-secondary" type="button">Làm mới lịch sử</button>
+      </header>
+
+      <section class="upload-section" aria-labelledby="upload-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Nhận diện</p>
+            <h2 id="upload-title">Tải ảnh đồng hồ</h2>
+          </div>
+          <p class="hint">Có thể chọn nhiều ảnh; hệ thống xử lý lần lượt.</p>
+        </div>
+
+        <form id="upload-form">
+          <label id="drop-zone" class="drop-zone" for="image-input">
+            <strong>Chọn hoặc kéo ảnh vào đây</strong>
+            <span>JPG, PNG, WEBP · tối đa 10 MB mỗi ảnh</span>
+            <input id="image-input" name="files" type="file" accept="image/*" multiple />
+          </label>
+          <div id="selection-summary" class="selection-summary" aria-live="polite">Chưa chọn ảnh.</div>
+          <div id="preview-grid" class="preview-grid"></div>
+          <div class="upload-options">
+            <label>
+              Ngưỡng chữ số
+              <input id="digit-conf" type="number" min="0.01" max="0.99" step="0.01" value="0.60" />
+            </label>
+            <label>
+              Xoay ảnh
+              <select id="rotate-degrees">
+                <option value="0">Không xoay</option>
+                <option value="90">90°</option>
+                <option value="180">180°</option>
+                <option value="270">270°</option>
+              </select>
+            </label>
+            <button id="submit-button" class="button button-primary" type="submit" disabled>Nhận diện ảnh</button>
+          </div>
+        </form>
+        <div id="upload-status" class="status" aria-live="polite"></div>
+      </section>
+
+      <section class="results-section" aria-labelledby="results-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Kết quả mới</p>
+            <h2 id="results-title">Ảnh vừa xử lý</h2>
+          </div>
+        </div>
+        <div id="new-results" class="result-grid empty-state">Chưa có ảnh nào được xử lý trong phiên này.</div>
+      </section>
+
+      <section class="history-section" aria-labelledby="history-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="history-title">Lịch sử nhận diện</h2>
+          </div>
+          <span id="history-count" class="count-label"></span>
+        </div>
+        <div id="history-list" class="history-list" aria-live="polite"></div>
+      </section>
+    </main>
+    <template id="result-template">
+      <article class="result-card">
+        <a class="result-image-link" target="_blank" rel="noreferrer">
+          <img class="result-image" alt="Ảnh đồng hồ đã nhận diện" />
+        </a>
+        <div class="result-content">
+          <div class="result-topline">
+            <span class="status-badge"></span>
+            <time class="result-date"></time>
+          </div>
+          <p class="reading-label">Chỉ số</p>
+          <p class="reading-value"></p>
+          <p class="confidence-value"></p>
+          <form class="correction-form">
+            <label>
+              Xác nhận/sửa chỉ số
+              <input class="correction-input" type="text" maxlength="100" inputmode="numeric" />
+            </label>
+            <button class="button button-secondary" type="submit">Lưu</button>
+          </form>
+        </div>
+      </article>
+    </template>
+    <script src="app.js?v=2"></script>
+  </body>
+</html>

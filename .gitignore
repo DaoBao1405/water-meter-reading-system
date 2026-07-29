@@ -1,7 +1,15 @@
-# Local secrets and environment overrides
+# Secrets and local environment overrides
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+credentials*.json
+
+# Local development tools and indexes
+.codegraph/
+.codex/
+.agents/
 
 # Python virtual environments and caches
 .venv/
@@ -12,22 +20,29 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# Runtime output
+# Private datasets and generated model artifacts
+data/
+runs/
+exports/
+models/*
+!models/.gitkeep
+
+# Runtime output and local databases
 logs/
 *.log
-
-# Raw/private datasets
-data/
-
-# Generated model artifacts
-models/
+*.db
+*.sqlite
+*.sqlite3
 
 # Notebook checkpoints
 .ipynb_checkpoints/
 
-# OS and editor files
-.DS_Store
-Thumbs.db
+# IDE and operating-system files
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
