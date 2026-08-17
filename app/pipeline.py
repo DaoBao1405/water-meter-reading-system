@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,10 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 from ultralytics import YOLO
+
+
+COUNTER_PADDING = 0.04
+LITER_MASK_PADDING_PX = 4
 
 
 def _intersect_and_to_crop(
@@ -34,38 +39,42 @@ def _center_inside_box(x: float, y: float, box: list[float]) -> bool:
 def _sort_digits_toward_liter(
     digits: list[dict[str, Any]], liter_boxes_in_crop: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], str]:
-    """Order digits in the direction that approaches the liter-area box."""
+    """Order digits along their PCA axis in the direction of the liter box."""
     if len(digits) <= 1:
         return digits, "unknown"
 
-    x_centers = np.array([item["x_center"] for item in digits])
-    y_centers = np.array([item["y_center"] for item in digits])
-    is_vertical = float(np.ptp(y_centers)) > float(np.ptp(x_centers))
+    centers = np.array(
+        [[item["x_center"], item["y_center"]] for item in digits],
+        dtype=np.float64,
+    )
+    centered = centers - centers.mean(axis=0, keepdims=True)
+    covariance = centered.T @ centered
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    axis = eigenvectors[:, int(np.argmax(eigenvalues))]
+    projections = centers @ axis
 
     if liter_boxes_in_crop:
         best_liter = max(
             liter_boxes_in_crop, key=lambda item: item["confidence"]
         )
         lx1, ly1, lx2, ly2 = best_liter["xyxy"]
-        liter_x = (lx1 + lx2) / 2
-        liter_y = (ly1 + ly2) / 2
+        liter_center = np.array([(lx1 + lx2) / 2, (ly1 + ly2) / 2])
+        liter_projection = float(liter_center @ axis)
+        digit_middle = float(np.median(projections))
+
+        if liter_projection < digit_middle:
+            axis = -axis
+            projections = -projections
     else:
-        liter_x = liter_y = None
+        dominant_index = int(np.argmax(np.abs(axis)))
+        if axis[dominant_index] < 0:
+            axis = -axis
+            projections = -projections
 
-    if is_vertical:
-        digit_middle = float(np.median(y_centers))
-        reverse = liter_y is not None and liter_y < digit_middle
-        return (
-            sorted(digits, key=lambda item: item["y_center"], reverse=reverse),
-            "bottom_to_top" if reverse else "top_to_bottom",
-        )
-
-    digit_middle = float(np.median(x_centers))
-    reverse = liter_x is not None and liter_x < digit_middle
-    return (
-        sorted(digits, key=lambda item: item["x_center"], reverse=reverse),
-        "right_to_left" if reverse else "left_to_right",
-    )
+    order = np.argsort(projections)
+    sorted_digits = [digits[int(index)] for index in order]
+    direction = f"pca_axis_{axis[0]:.3f}_{axis[1]:.3f}"
+    return sorted_digits, direction
 
 
 def image_from_bytes(raw_image: bytes) -> Image.Image:
@@ -140,9 +149,13 @@ class MeterReader:
             return {**base, "status": "counter_not_found"}
 
         best_counter = max(counter_boxes, key=lambda item: item["confidence"])
-        x1, y1, x2, y2 = map(int, best_counter["xyxy"])
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(full_image.width, x2), min(full_image.height, y2)
+        x1, y1, x2, y2 = best_counter["xyxy"]
+        pad_x = (x2 - x1) * COUNTER_PADDING
+        pad_y = (y2 - y1) * COUNTER_PADDING
+        x1 = max(0, math.floor(x1 - pad_x))
+        y1 = max(0, math.floor(y1 - pad_y))
+        x2 = min(full_image.width, math.ceil(x2 + pad_x))
+        y2 = min(full_image.height, math.ceil(y2 + pad_y))
 
         if x2 <= x1 or y2 <= y1:
             return {**base, "status": "invalid_counter_box"}
@@ -164,10 +177,16 @@ class MeterReader:
             lx1, ly1, lx2, ly2 = liter_item["xyxy"]
             mask_draw.rectangle(
                 (
-                    max(0, int(lx1) - 4),
-                    max(0, int(ly1) - 4),
-                    min(digit_input.width, int(lx2) + 4),
-                    min(digit_input.height, int(ly2) + 4),
+                    max(0, math.floor(lx1) - LITER_MASK_PADDING_PX),
+                    max(0, math.floor(ly1) - LITER_MASK_PADDING_PX),
+                    min(
+                        digit_input.width,
+                        math.ceil(lx2) + LITER_MASK_PADDING_PX,
+                    ),
+                    min(
+                        digit_input.height,
+                        math.ceil(ly2) + LITER_MASK_PADDING_PX,
+                    ),
                 ),
                 fill=(127, 127, 127),
             )
@@ -212,13 +231,13 @@ class MeterReader:
             else None
         )
 
-        # A partial reading is unsafe to present as a meter value. Keep its
-        # boxes for review, but require the configured number of digits.
+        # Only an exact digit count is safe to present as a meter reading.
+        # Keep all boxes for review when the count is unexpected.
         if not digits:
             status = "digits_not_found"
             reading = None
-        elif len(digits) < expected_digit_count:
-            status = "incomplete_digits"
+        elif len(digits) != expected_digit_count:
+            status = "unexpected_digit_count"
             reading = None
         else:
             status = "ok"

@@ -1,104 +1,115 @@
 # Hệ thống đọc chỉ số đồng hồ nước
 
-Hệ thống nhận diện chỉ số đồng hồ nước từ ảnh bằng pipeline hai tầng YOLO11. Người dùng có thể tải một hoặc nhiều ảnh trên giao diện web, xem vùng nhận diện và chữ số, sửa kết quả khi cần, đồng thời tra cứu lịch sử đã lưu trong PostgreSQL.
+Ứng dụng nhận diện chỉ số đồng hồ nước từ ảnh bằng hai model YOLO11, lưu kết quả vào PostgreSQL và cung cấp giao diện web để xem, kiểm tra và sửa chỉ số.
 
-## Tính năng chính
+Phiên bản hiện tại sử dụng bộ model v2:
 
-- Tải ảnh bằng hộp chọn tệp hoặc kéo thả; hỗ trợ xử lý nhiều ảnh lần lượt.
-- Chuẩn hóa hướng ảnh theo EXIF và cho phép xoay ảnh trước khi nhận diện.
-- Dùng model thứ nhất để phát hiện vùng hiển thị `counter` và vùng `liter`.
-- Dùng model thứ hai để nhận diện các chữ số từ `0` đến `9`.
-- Loại các chữ số thuộc vùng `liter` khỏi chỉ số chính.
-- Tự xác định hướng đọc: trái sang phải, phải sang trái, trên xuống dưới hoặc dưới lên trên.
-- Chỉ trả về chỉ số khi phát hiện đủ số chữ số tối thiểu được cấu hình.
-- Sinh ảnh PNG có bounding box cho vùng đồng hồ, vùng lít và các chữ số được chấp nhận.
-- Lưu ảnh gốc, ảnh chú thích, kết quả nhận diện và thời điểm xử lý trong PostgreSQL.
-- Cho phép người dùng xác nhận hoặc sửa chỉ số đã nhận diện.
-- Cung cấp REST API, Swagger UI và giao diện web responsive.
+- Region model `region_itron_v2`: phát hiện vùng `counter` và `liter`.
+- Digit model `digit_itron_aichi_v2`: phát hiện các chữ số từ `0` đến `9`.
+- Pipeline có padding vùng counter, mask vùng liter và sắp xếp chữ số bằng PCA để hỗ trợ ảnh nằm ngang, dọc hoặc chéo.
+
+## Tính năng
+
+- Tải lên một hoặc nhiều ảnh từ giao diện web.
+- Xoay ảnh trước khi nhận diện: `0°`, `90°`, `180°` hoặc `270°`.
+- Điều chỉnh confidence của model chữ số.
+- Nhận diện theo hai giai đoạn: vùng đồng hồ rồi đến chữ số.
+- Trả ảnh PNG đã vẽ bounding box.
+- Lưu ảnh gốc, ảnh chú thích và kết quả vào PostgreSQL.
+- Xem 10 bản ghi gần nhất trên giao diện.
+- Xác nhận hoặc sửa thủ công chỉ số đã nhận diện.
+- Chạy bằng Docker Compose hoặc trực tiếp trong môi trường Python.
 
 ## Kiến trúc
 
 ```mermaid
 flowchart LR
-    U["Trình duyệt"] --> F["Frontend tĩnh<br/>Nginx :3000"]
-    F --> A["FastAPI :8000"]
-    A --> R["YOLO counter/liter"]
-    R --> D["YOLO digit reader"]
-    D --> A
-    A --> P[("PostgreSQL :5432")]
+    U["Người dùng"] --> F["Frontend / Nginx<br/>localhost:3000"]
+    F --> A["FastAPI<br/>localhost:8000"]
+    A --> R["YOLO Region v2<br/>counter / liter"]
+    R --> D["YOLO Digit v2<br/>0–9"]
+    A --> P["PostgreSQL 16<br/>localhost:5432"]
+    A --> F
 ```
 
-Docker Compose khởi chạy ba dịch vụ:
+Ba service trong `docker-compose.yml`:
 
-| Dịch vụ | Công nghệ | Cổng | Vai trò |
+| Service | Công nghệ | Cổng máy host | Vai trò |
 | --- | --- | --- | --- |
-| `frontend` | Nginx 1.27 Alpine | `3000` | Phục vụ HTML, CSS và JavaScript |
-| `api` | FastAPI, Uvicorn, Ultralytics | `8000` | Nhận ảnh, chạy model và quản lý kết quả |
-| `postgres` | PostgreSQL 16 Alpine | `5432` | Lưu metadata và dữ liệu nhị phân của ảnh |
+| `frontend` | Nginx Alpine | `3000` | Phục vụ giao diện HTML/CSS/JavaScript |
+| `api` | FastAPI + Uvicorn | `8000` | Nhận ảnh, chạy YOLO và quản lý kết quả |
+| `postgres` | PostgreSQL 16 Alpine | `5432` | Lưu lịch sử, ảnh và kết quả nhận diện |
 
-## Luồng nhận diện
+## Luồng nhận diện v2
 
-1. API kiểm tra loại tệp, kích thước tối đa 10 MB và tính hợp lệ của ảnh.
-2. Pillow chuẩn hóa EXIF, chuyển ảnh sang RGB và xoay ảnh nếu có yêu cầu.
-3. `counter_best.pt` phát hiện các vùng `counter` và `liter` trên ảnh đầy đủ.
-4. Hệ thống chọn vùng `counter` có confidence cao nhất rồi crop vùng đó.
-5. Các vùng `liter` giao với crop được chuyển về tọa độ cục bộ và che bằng màu xám.
-6. `digit_best.pt` nhận diện chữ số trên crop đã che vùng lít.
-7. Những chữ số có tâm nằm trong vùng `liter` tiếp tục bị loại để tránh tính phần thập phân/lít vào chỉ số chính.
-8. Các chữ số còn lại được sắp xếp theo hướng tiến về vùng `liter`.
-9. Hệ thống tạo ảnh chú thích, lưu kết quả cùng ảnh vào PostgreSQL và trả JSON cho client.
+1. Đọc ảnh, chuẩn hóa EXIF orientation và chuyển sang RGB.
+2. Xoay ảnh nếu request có `rotate_degrees`.
+3. Region model phát hiện `counter` và `liter` trên ảnh gốc với `imgsz=640`.
+4. Chọn vùng `counter` có confidence cao nhất.
+5. Mở rộng bounding box counter thêm 4% mỗi chiều rồi crop.
+6. Đổi tọa độ các vùng `liter` sang hệ tọa độ của counter crop.
+7. Che vùng liter bằng màu xám, mở rộng mask thêm 4 px.
+8. Digit model phát hiện chữ số `0–9` trên counter crop.
+9. Bỏ các chữ số có tâm nằm trong vùng liter.
+10. Dùng PCA để sắp xếp chữ số dọc theo trục hiển thị và hướng về phía liter.
+11. Chỉ trả `status="ok"` khi số chữ số đúng bằng `EXPECTED_DIGIT_COUNT`.
 
-YOLO inference được bảo vệ bằng một lock trong tiến trình API, vì vậy hai request không dùng chung model/GPU đồng thời.
+Giá trị `reading_direction` có dạng `pca_axis_X_Y`, ví dụ `pca_axis_1.000_0.000`. Nếu có không quá một chữ số, giá trị là `unknown`.
+
+## Model bắt buộc
+
+Đặt hai weights tại:
+
+```text
+models/
+├── counter_best.pt
+└── digit_best.pt
+```
+
+| File | Dataset v2 | Classes |
+| --- | --- | --- |
+| `models/counter_best.pt` | `region_itron_v2` | `counter`, `liter` |
+| `models/digit_best.pt` | `digit_itron_aichi_v2` | `0` đến `9` |
+
+Thư mục `models/*` được Git bỏ qua để tránh commit file nhị phân lớn. Chỉ `models/.gitkeep` được theo dõi. Vì Dockerfile copy weights vào image, sau khi thay model phải build lại API image.
 
 ## Cấu trúc dự án
 
 ```text
 water-meter-reading-system/
 ├── app/
-│   ├── main.py          # FastAPI, routes, validation và lưu kết quả
-│   ├── pipeline.py      # Pipeline YOLO hai tầng và vẽ ảnh chú thích
-│   ├── db.py            # Kết nối và session SQLAlchemy
-│   ├── models.py        # Model bảng meter_readings
-│   └── schemas.py       # Pydantic request/response schemas
+│   ├── main.py              # FastAPI routes và vòng đời ứng dụng
+│   ├── pipeline.py          # Pipeline YOLO11 v2
+│   ├── schemas.py           # Pydantic response/request schemas
+│   ├── models.py            # SQLAlchemy model meter_readings
+│   └── db.py                # PostgreSQL engine và session
 ├── frontend/
-│   ├── index.html       # Giao diện tải ảnh và lịch sử
-│   ├── app.js           # Gọi API, render kết quả và sửa chỉ số
-│   ├── styles.css       # Giao diện responsive
-│   ├── nginx.conf       # Cấu hình phục vụ frontend
+│   ├── index.html
+│   ├── app.js
+│   ├── styles.css
+│   ├── nginx.conf
 │   └── Dockerfile
 ├── models/
-│   ├── counter_best.pt  # Model phát hiện counter/liter
-│   └── digit_best.pt    # Model nhận diện chữ số 0–9
-├── detection-yolo11.ipynb # Chuẩn bị dữ liệu, train, đánh giá và export model
+│   ├── counter_best.pt
+│   └── digit_best.pt
+├── tests/
+│   └── test_pipeline.py
+├── detection-yolo11.ipynb  # Chuẩn bị dữ liệu, train, đánh giá và export model
 ├── docker-compose.yml
 ├── Dockerfile
 ├── requirements.txt
 └── .env.example
 ```
 
-## Yêu cầu
-
-### Chạy bằng Docker
-
-- Docker Desktop hoặc Docker Engine có Docker Compose.
-- Hai file model phải tồn tại:
-
-```text
-models/counter_best.pt
-models/digit_best.pt
-```
-
-Hai weights đã có sẵn trong phiên bản dự án hiện tại.
-
-### Chạy trực tiếp
-
-- Python 3.11 được khuyến nghị.
-- PostgreSQL đang hoạt động.
-- Các thư viện hệ thống cần thiết cho Pillow/OpenCV tùy theo hệ điều hành.
-
 ## Khởi chạy nhanh bằng Docker
 
-### 1. Tạo cấu hình môi trường
+### Yêu cầu
+
+- Docker Desktop có Docker Compose.
+- Hai model v2 đã được đặt đúng trong thư mục `models/`.
+- Các cổng `3000`, `8000` và `5432` đang trống.
+
+### 1. Tạo file môi trường
 
 PowerShell:
 
@@ -106,41 +117,50 @@ PowerShell:
 Copy-Item .env.example .env
 ```
 
-Đổi `POSTGRES_PASSWORD` trong `.env` trước khi dùng ngoài môi trường phát triển.
+Mở `.env` và đổi `POSTGRES_PASSWORD` trước khi sử dụng ngoài môi trường phát triển.
 
-### 2. Build và chạy
+### 2. Kiểm tra weights
 
 ```powershell
-docker compose up --build
+Test-Path .\models\counter_best.pt
+Test-Path .\models\digit_best.pt
 ```
 
-Sau khi các container sẵn sàng:
+Cả hai lệnh phải trả về `True`.
 
-- Giao diện web: <http://localhost:3000>
-- Swagger UI: <http://localhost:8000/docs>
-- OpenAPI JSON: <http://localhost:8000/openapi.json>
-- Health check: <http://localhost:8000/health>
-
-Bảng `meter_readings` và các index được SQLAlchemy tự tạo khi API khởi động. Dữ liệu PostgreSQL được giữ trong Docker volume `postgres_data`.
-
-Chạy nền:
+### 3. Build và chạy
 
 ```powershell
 docker compose up --build -d
+```
+
+Sau khi các container khởi động:
+
+- Giao diện: <http://localhost:3000>
+- API health: <http://localhost:8000/health>
+- Swagger UI: <http://localhost:8000/docs>
+- OpenAPI JSON: <http://localhost:8000/openapi.json>
+
+Kiểm tra trạng thái và log:
+
+```powershell
+docker compose ps
 docker compose logs -f api
 ```
 
-Dừng hệ thống nhưng giữ dữ liệu:
+Dừng hệ thống nhưng giữ dữ liệu PostgreSQL:
 
 ```powershell
 docker compose down
 ```
 
-> Không thêm `-v` vào lệnh `docker compose down` nếu muốn giữ lịch sử, vì tùy chọn đó sẽ xóa volume PostgreSQL.
+> `docker compose down -v` sẽ xóa volume PostgreSQL và toàn bộ lịch sử đã lưu.
 
 ## Chạy trực tiếp để phát triển
 
-### 1. Khởi chạy PostgreSQL
+Các lệnh dưới đây dành cho PowerShell trên Windows.
+
+### 1. Chạy PostgreSQL
 
 Có thể chỉ chạy database bằng Docker:
 
@@ -150,12 +170,16 @@ docker compose up -d postgres
 
 ### 2. Tạo môi trường Python
 
+Yêu cầu Python 3.11.
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+Dự án cố định `ultralytics==8.4.102` để môi trường inference khớp môi trường huấn luyện model v2.
 
 ### 3. Cấu hình và chạy API
 
@@ -164,14 +188,19 @@ $env:DATABASE_URL = "postgresql+psycopg://meter:meter_dev_password@localhost:543
 $env:MODEL_DEVICE = "cpu"
 $env:EXPECTED_DIGIT_COUNT = "4"
 $env:CORS_ORIGINS = "http://localhost:3000"
+
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Nếu password trong `.env` đã được đổi, phần password của `DATABASE_URL` cũng phải giống giá trị đó.
+Nếu muốn dùng GPU ngoài Docker và PyTorch nhận diện được CUDA:
+
+```powershell
+$env:MODEL_DEVICE = "0"
+```
 
 ### 4. Chạy frontend
 
-Mở terminal khác:
+Mở terminal PowerShell khác:
 
 ```powershell
 python -m http.server 3000 --directory frontend
@@ -179,22 +208,20 @@ python -m http.server 3000 --directory frontend
 
 Sau đó truy cập <http://localhost:3000>.
 
-Frontend mặc định gọi API tại `http://localhost:8000`. Có thể đặt `window.METER_API_BASE` trước khi tải `frontend/app.js` nếu triển khai API ở địa chỉ khác.
-
 ## Biến môi trường
 
 | Biến | Mặc định | Ý nghĩa |
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql+psycopg://meter:meter_dev_password@localhost:5432/meter` | Chuỗi kết nối PostgreSQL của API |
-| `POSTGRES_PASSWORD` | `meter_dev_password` trong Compose | Password cho container PostgreSQL và chuỗi kết nối của API |
-| `MODEL_DIR` | `models` (`/app/models` trong image) | Thư mục chứa weights |
-| `COUNTER_WEIGHTS` | `${MODEL_DIR}/counter_best.pt` | Đường dẫn model phát hiện `counter`/`liter` |
-| `DIGIT_WEIGHTS` | `${MODEL_DIR}/digit_best.pt` | Đường dẫn model chữ số |
-| `MODEL_DEVICE` | Tự chọn CUDA nếu có; Compose dùng `cpu` | Thiết bị inference, ví dụ `cpu`, `0` hoặc `cuda:0` |
-| `EXPECTED_DIGIT_COUNT` | `4` | Số chữ số tối thiểu để kết quả có trạng thái `ok` |
+| `POSTGRES_PASSWORD` | `meter_dev_password` trong Compose | Mật khẩu PostgreSQL; nên đổi trong `.env` |
+| `MODEL_DIR` | `models`; trong image là `/app/models` | Thư mục chứa weights |
+| `COUNTER_WEIGHTS` | `${MODEL_DIR}/counter_best.pt` | Đường dẫn region model |
+| `DIGIT_WEIGHTS` | `${MODEL_DIR}/digit_best.pt` | Đường dẫn digit model |
+| `MODEL_DEVICE` | Tự chọn CUDA nếu có; Compose dùng `cpu` | Thiết bị inference: `cpu`, `0` hoặc `cuda:0` |
+| `EXPECTED_DIGIT_COUNT` | `4` | Số chữ số chính xác để kết quả có trạng thái `ok` |
 | `CORS_ORIGINS` | `*` trong code; Compose dùng `http://localhost:3000` | Danh sách origin được phép, phân cách bằng dấu phẩy |
 
-Dockerfile hiện dùng image Python CPU và Compose chưa cấu hình GPU passthrough. Không đổi `MODEL_DEVICE` sang CUDA trong Docker nếu chưa thay image PyTorch và cấu hình GPU cho container.
+Dockerfile hiện dùng image Python CPU và Compose chưa cấu hình GPU passthrough. Không đặt `MODEL_DEVICE=0` cho container hiện tại nếu chưa đổi image PyTorch và cấu hình GPU cho Docker.
 
 ## REST API
 
@@ -202,26 +229,41 @@ Dockerfile hiện dùng image Python CPU và Compose chưa cấu hình GPU passt
 | --- | --- | --- |
 | `GET` | `/health` | Kiểm tra API và thiết bị inference |
 | `POST` | `/v1/meter/read` | Nhận diện một ảnh và lưu kết quả |
-| `GET` | `/v1/readings` | Lấy danh sách kết quả, không chứa bytes ảnh |
+| `GET` | `/v1/readings` | Lấy danh sách kết quả theo phân trang |
 | `GET` | `/v1/readings/{reading_id}` | Lấy chi tiết một kết quả |
 | `GET` | `/v1/readings/{reading_id}/image` | Trả ảnh gốc |
-| `GET` | `/v1/readings/{reading_id}/annotated-image` | Trả ảnh PNG đã vẽ bounding box |
-| `PATCH` | `/v1/readings/{reading_id}` | Gán hoặc xóa `corrected_reading` |
+| `GET` | `/v1/readings/{reading_id}/annotated-image` | Trả ảnh PNG đã chú thích |
+| `PATCH` | `/v1/readings/{reading_id}` | Xác nhận, sửa hoặc xóa chỉ số đã sửa |
 
-### `POST /v1/meter/read`
+### Health check
 
-Request dùng `multipart/form-data` với trường `file`.
+```powershell
+curl.exe http://localhost:8000/health
+```
+
+Ví dụ:
+
+```json
+{
+  "status": "ok",
+  "device": "cpu"
+}
+```
+
+### Nhận diện một ảnh
+
+`POST /v1/meter/read` nhận `multipart/form-data` với trường `file`. API chỉ nhận tệp ảnh và giới hạn kích thước 10 MiB.
 
 | Query parameter | Mặc định | Giới hạn | Ý nghĩa |
 | --- | --- | --- | --- |
-| `region_conf` | `0.25` | `0.01–0.99` | Confidence của model vùng |
-| `digit_conf` | `0.25` | `0.01–0.99` | Confidence của model chữ số |
-| `rotate_degrees` | `0` | `-180–180` | Góc xoay ảnh trước inference |
-| `include_annotated_image` | `false` | Boolean | Trả thêm PNG dạng Base64 trong JSON |
+| `region_conf` | `0.25` | `0.01–0.99` | Confidence của region model |
+| `digit_conf` | `0.25` | `0.01–0.99` | Confidence của digit model |
+| `rotate_degrees` | `0` | `-180–180` | Góc xoay trước khi inference |
+| `include_annotated_image` | `false` | Boolean | Thêm ảnh PNG dạng Base64 vào response |
 
-Giao diện web đang đặt `digit_conf=0.60` và xử lý từng ảnh tuần tự. Tùy chọn hiển thị `270°` được gửi tới API dưới dạng góc tương đương `-90°` để nằm trong giới hạn `-180°` đến `180°` của backend.
+Giao diện web đặt `digit_conf=0.60` theo mặc định và gửi từng ảnh tuần tự. API xử lý một ảnh cho mỗi request.
 
-Ví dụ PowerShell:
+PowerShell:
 
 ```powershell
 curl.exe -X POST `
@@ -229,22 +271,22 @@ curl.exe -X POST `
   -F "file=@C:\duong-dan\anh-dong-ho.jpg"
 ```
 
-Ví dụ response thành công:
+Ví dụ response rút gọn:
 
 ```json
 {
   "id": "9b265fc9-37b7-43e9-830d-0bd584c35112",
   "status": "ok",
   "reading": "1234",
-  "reading_direction": "left_to_right",
-  "counter_box": [120, 80, 510, 250],
+  "reading_direction": "pca_axis_1.000_0.000",
+  "counter_box": [115, 74, 515, 256],
   "counter_confidence": 0.963,
   "average_digit_confidence": 0.912,
   "image_size": {
     "width": 1280,
     "height": 720
   },
-  "detected_at": "2026-07-29T10:00:00Z",
+  "detected_at": "2026-08-12T06:30:00Z",
   "liter_boxes": [],
   "liter_boxes_in_crop": [],
   "digits": [],
@@ -253,9 +295,21 @@ Ví dụ response thành công:
 }
 ```
 
-Trường `digits` trong response thực tế chứa từng chữ số, bounding box cục bộ, tâm box và confidence. Mảng được rút gọn trong ví dụ để dễ đọc.
+`digits` trong response thực tế chứa từng chữ số, bounding box cục bộ, tâm box và confidence. Mảng được rút gọn trong ví dụ trên.
 
-### Phân trang lịch sử
+### Trạng thái nhận diện
+
+| Status | Ý nghĩa | Giá trị `reading` |
+| --- | --- | --- |
+| `ok` | Phát hiện đúng `EXPECTED_DIGIT_COUNT` chữ số | Chuỗi chỉ số |
+| `counter_not_found` | Không tìm thấy vùng counter | `null` |
+| `invalid_counter_box` | Bounding box counter không hợp lệ | `null` |
+| `digits_not_found` | Có counter nhưng không có chữ số được chấp nhận | `null` |
+| `unexpected_digit_count` | Số chữ số khác `EXPECTED_DIGIT_COUNT` | `null` |
+
+Các bounding box chữ số vẫn được giữ trong response khi số lượng không đúng để phục vụ kiểm tra thủ công.
+
+### Lịch sử và phân trang
 
 ```http
 GET /v1/readings?limit=20&offset=0
@@ -263,8 +317,8 @@ GET /v1/readings?limit=20&offset=0
 
 - `limit`: từ `1` đến `100`, mặc định `20`.
 - `offset`: từ `0`, mặc định `0`.
-- Kết quả được sắp xếp mới nhất trước.
-- Frontend hiển thị 10 bản ghi gần nhất.
+- Bản ghi được sắp xếp mới nhất trước.
+- Danh sách không chứa bytes ảnh; dùng endpoint ảnh riêng khi cần.
 
 ### Xác nhận hoặc sửa chỉ số
 
@@ -275,132 +329,141 @@ curl.exe -X PATCH `
   -d '{"corrected_reading":"1234"}'
 ```
 
-Để xóa giá trị đã sửa:
+Xóa giá trị đã sửa:
 
-```json
-{
-  "corrected_reading": null
-}
+```powershell
+curl.exe -X PATCH `
+  "http://localhost:8000/v1/readings/READING_ID" `
+  -H "Content-Type: application/json" `
+  -d '{"corrected_reading":null}'
 ```
 
-`corrected_reading` có độ dài tối đa 100 ký tự. Code hiện tại không bắt buộc trường này chỉ chứa chữ số.
-
-## Trạng thái nhận diện
-
-| Status | Ý nghĩa |
-| --- | --- |
-| `ok` | Phát hiện ít nhất `EXPECTED_DIGIT_COUNT` chữ số và trả chỉ số trong `reading` |
-| `counter_not_found` | Không tìm thấy vùng hiển thị đồng hồ |
-| `invalid_counter_box` | Bounding box của vùng đồng hồ không hợp lệ |
-| `digits_not_found` | Tìm thấy vùng đồng hồ nhưng không có chữ số được chấp nhận |
-| `incomplete_digits` | Có chữ số nhưng ít hơn `EXPECTED_DIGIT_COUNT`; `reading` được trả về là `null` |
-
-Hướng đọc có thể là:
-
-- `left_to_right`
-- `right_to_left`
-- `top_to_bottom`
-- `bottom_to_top`
-- `unknown` khi có không quá một chữ số
+`corrected_reading` có độ dài tối đa 100 ký tự. Backend hiện không bắt buộc giá trị này chỉ chứa chữ số.
 
 ## Dữ liệu PostgreSQL
 
 Bảng `meter_readings` lưu:
 
-- UUID của bản ghi.
-- Ảnh gốc và content type.
-- Ảnh PNG đã chú thích và content type.
-- Chỉ số model đọc được và chỉ số người dùng sửa.
-- Trạng thái và hướng đọc.
-- Bounding box/confidence của vùng đồng hồ.
-- Confidence chữ số trung bình.
-- Kích thước ảnh.
-- Các vùng `liter`, chữ số được chấp nhận và chữ số bị loại.
-- Thông báo lỗi dự phòng và thời điểm nhận diện.
+- UUID và thời điểm nhận diện.
+- Ảnh gốc cùng content type.
+- Ảnh PNG đã chú thích cùng content type.
+- Chỉ số nhận diện và chỉ số đã sửa.
+- Trạng thái, hướng đọc và confidence.
+- Kích thước ảnh và bounding box counter.
+- Danh sách vùng liter, chữ số được chấp nhận và chữ số bị loại trong liter.
 
-Hai index được tạo trên `detected_at` và `status`. Dự án lưu toàn bộ bytes ảnh trong PostgreSQL, không cần S3, MinIO hoặc MongoDB.
+Schema được tạo tự động khi API khởi động. Dữ liệu Docker được lưu trong volume `postgres_data`.
 
-## Huấn luyện và export model
+## Kiểm thử
 
-Notebook `detection-yolo11.ipynb` gồm 21 code cell và thực hiện toàn bộ quy trình:
+Chạy toàn bộ kiểm thử pipeline:
 
-1. Đọc và giải nén dataset YOLO từ `/mnt/yolo-data`.
-2. Audit số lượng ảnh, class và phân bố bounding box cho các split `train`, `valid`, `test`.
-3. Chuyển dataset nguồn thành hai dataset:
-   - `counter_liter_detector`: hai class `counter` và `liter`.
-   - `digit_reader_no_liter`: mười class chữ số `0–9`, crop theo vùng counter và che vùng liter.
-4. Kiểm tra trực quan crop và nhãn trước khi train.
-5. Train `yolo11n.pt` cho model vùng trong tối đa 120 epoch.
-6. Train `yolo11s.pt` cho model chữ số trong tối đa 120 epoch.
-7. So sánh loss, precision, recall và mAP; tạo biểu đồ validation.
-8. Chạy thử pipeline trên ảnh ngoài dataset.
-9. Export hai weights thành:
-
-```text
-counter_best.pt
-digit_best.pt
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Notebook được viết cho môi trường có volume `/mnt/yolo-data` và sử dụng IPython magic `%uv`; cần điều chỉnh đường dẫn nếu chạy trên máy cá nhân hoặc nền tảng notebook khác.
+Kiểm tra biên dịch Python:
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q app tests
+```
+
+Bộ test hiện kiểm tra:
+
+- Counter crop được mở rộng đúng 4%.
+- Chỉ số chỉ hợp lệ khi có đúng số chữ số yêu cầu.
+- PCA sắp xếp đúng dãy chữ số nằm chéo theo hướng liter.
+
+## Huấn luyện và thay model
+
+Notebook `detection-yolo11.ipynb` bao gồm quy trình:
+
+1. Chuẩn bị dataset Itron v2 và Aichi.
+2. Chuẩn hóa mapping class.
+3. Tạo dataset region `counter/liter` và dataset digit `0–9`.
+4. Train `region_itron_v2` từ YOLO11n.
+5. Train `digit_itron_aichi_v2` từ YOLO11s.
+6. Đánh giá Precision, Recall, mAP và ảnh validation.
+7. Export hai weights thành `counter_best.pt` và `digit_best.pt`.
+
+Sau khi tải weights mới:
+
+```powershell
+Copy-Item C:\duong-dan\counter_best.pt .\models\counter_best.pt -Force
+Copy-Item C:\duong-dan\digit_best.pt .\models\digit_best.pt -Force
+```
+
+Nếu chạy Docker:
+
+```powershell
+docker compose up --build -d
+```
+
+Nếu chạy Uvicorn trực tiếp, dừng và khởi động lại API vì model chỉ được load một lần trong vòng đời ứng dụng.
 
 ## Xử lý lỗi thường gặp
 
-### API không khởi động vì thiếu weights
+### API báo không tìm thấy weights
 
 Kiểm tra:
 
 ```powershell
-Test-Path .\models\counter_best.pt
-Test-Path .\models\digit_best.pt
+Get-Item .\models\counter_best.pt
+Get-Item .\models\digit_best.pt
 ```
 
-API load cả hai model ngay khi khởi động và sẽ dừng nếu thiếu một file.
+Tên file phải chính xác. Nếu vừa thay model trong Docker, cần build lại image.
 
-### Frontend báo không thể tải lịch sử
+### Frontend không tải được lịch sử
 
 - Kiểm tra <http://localhost:8000/health>.
-- Kiểm tra API có chạy đúng cổng `8000`.
-- Kiểm tra `CORS_ORIGINS` chứa origin của frontend.
-- Nếu API không ở localhost, cấu hình lại `window.METER_API_BASE`.
+- Kiểm tra `CORS_ORIGINS` có chứa `http://localhost:3000`.
+- Xem log bằng `docker compose logs -f api`.
+- Frontend mặc định gọi API tại `http://localhost:8000`.
 
 ### API không kết nối được PostgreSQL
 
 ```powershell
-docker compose ps
+docker compose ps postgres
 docker compose logs postgres
-docker compose logs api
 ```
 
-Kiểm tra password trong `.env` và `DATABASE_URL` phải khớp nhau.
+Khi chạy API ngoài Docker, hostname trong `DATABASE_URL` phải là `localhost`. Khi chạy trong Compose, hostname phải là `postgres`.
 
-### Nhận diện thiếu chữ số
+### Kết quả là `unexpected_digit_count`
 
-- Giảm `digit_conf` từng bước nhỏ.
-- Thử xoay ảnh đúng chiều mặt đồng hồ.
-- Dùng ảnh rõ nét, đủ sáng và chụp gần vùng hiển thị.
-- Kiểm tra `EXPECTED_DIGIT_COUNT` có đúng loại đồng hồ hay không.
+- Thử giảm `digit_conf` nếu thiếu chữ số.
+- Thử tăng `digit_conf` nếu có nhiều box nhiễu.
+- Chọn đúng góc xoay ảnh.
+- Kiểm tra vùng counter và liter trên ảnh chú thích.
+- Xác nhận `EXPECTED_DIGIT_COUNT` phù hợp loại đồng hồ.
 
-## Lưu ý khi triển khai production
+### Kết quả sai thứ tự
 
-Phiên bản hiện tại phù hợp cho demo hoặc mạng nội bộ. Trước khi công khai cần:
+- Kiểm tra region model có phát hiện đúng vùng liter không.
+- Kiểm tra ảnh bị xoay hoặc phản chiếu bất thường.
+- Xem `reading_direction` và vị trí các bounding box chữ số trong response.
 
-- Thêm xác thực và phân quyền cho API.
-- Không dùng password mặc định.
-- Giới hạn CORS theo domain thực tế.
-- Bật HTTPS và đặt API sau reverse proxy.
-- Thiết lập backup/retention vì ảnh nhị phân làm database tăng nhanh.
-- Dùng migration tool như Alembic thay cho `create_all`.
-- Bổ sung test tự động, logging, monitoring và rate limiting.
-- Cân nhắc hàng đợi inference hoặc nhiều worker chuyên dụng khi cần xử lý đồng thời.
+## Lưu ý triển khai production
 
-## Công nghệ sử dụng
+- Đổi mật khẩu PostgreSQL và không commit file `.env`.
+- Giới hạn `CORS_ORIGINS` theo domain thật.
+- Đặt reverse proxy HTTPS trước frontend và API.
+- Không công khai cổng PostgreSQL ra Internet.
+- Sao lưu volume PostgreSQL định kỳ.
+- Lưu weights trong artifact storage hoặc image registry phù hợp; không commit trực tiếp vào Git.
+- Pipeline khóa inference để tránh hai request dùng cùng YOLO/GPU đồng thời; cần thiết kế worker/GPU riêng nếu muốn tăng throughput.
+- API hiện lưu toàn bộ bytes ảnh trong PostgreSQL; cần theo dõi dung lượng khi triển khai lâu dài.
+
+## Công nghệ
 
 - Python 3.11
 - FastAPI và Uvicorn
-- Ultralytics YOLO11, PyTorch
+- Ultralytics YOLO11 `8.4.102`
+- PyTorch
 - Pillow và NumPy
-- SQLAlchemy 2 và psycopg 3
+- SQLAlchemy 2 và Psycopg 3
 - PostgreSQL 16
-- HTML, CSS, JavaScript thuần
+- HTML, CSS và JavaScript thuần
 - Nginx
 - Docker Compose
